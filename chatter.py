@@ -1,176 +1,275 @@
 #!/usr/bin/env python3
 #
-# chatter.py
+# abc.py
 
-import sounddevice as sd
-import gnupg
-from prompt_toolkit import prompt
-from prompt_toolkit.completion import WordCompleter
+import time
 import numpy as np
 import sounddevice as sd
+import soundfile as sf
 import random
+import os
+import getpass
+import threading
+import random
+from prompt_toolkit import prompt, PromptSession
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit import Application
+from prompt_toolkit.layout.containers import VSplit, HSplit
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.layout.layout import Layout, Window
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts import message_dialog
 
-class Chatter:
-    def __init__(self, public_key, private_key, transmit_freq, receive_freq, output_dev, input_dev):
-        self.public_key = public_key
-        self.private_key = private_key
-        self.transmit_freq = transmit_freq
-        self.receive_freq = receive_freq
-        self.output_dev = output_dev
-        self.input_dev = input_dev
+from scipy.fft import fft, fftfreq
+from scipy import signal
+from scipy.signal import windows
+import matplotlib.pyplot as plt
 
-    def connect_output_device(self, output_dev=None):
-        ''' Choose the audio output device for communications.
-        Pull a list of available audio output devices and allow the user to pick or define.
-        Attach to the device for all communication output.'''
-        if dev is None:
-            # List all available output devices
-            devices = sd.query_devices()
-            output_devices = [device['name'] for device in devices if device['max_output_channels'] > 0]
-            
-            # Create a completer with all output devices
-            completer = WordCompleter(output_devices, ignore_case=True)
-            
-            # Prompt the user to choose a device
-            dev = prompt('Choose an output device: ', completer=completer)
-        
-        # Connect to the chosen device (for now, just print the device name)
-        print(f'Connected to output device: {dev}')
+freq_mapping = []
+output_buffer = Buffer()
+played_waveform = ''
+recorded_waveform = ''
 
-    def connect_input_device(self, input_dev=None):
-        ''' Choose the audio input device for communications.
-        Pull a list of available audio input devices and allow the user to pick or define.
-        Attach to the device for all communication input.'''
-        
-        if input_dev is None:
-            # List all available input devices
-            devices = sd.query_devices()
-            input_devices = [device['name'] for device in devices if device['max_input_channels'] > 0]
-            
-            # Create a completer with all input devices
-            completer = WordCompleter(input_devices, ignore_case=True)
-            
-            # Prompt the user to choose a device
-            input_dev = prompt('Choose an input device: ', completer=completer)
-        
-        # Connect to the chosen device (for now, just print the device name)
-        print(f'Connected to input device: {input_dev}')
+def text_to_sound(text, freq_mapping, delay=0, fs=44100, duration=2):
+    # Generate a sound for each character in the text and append to a list
+    sounds = []
+    for char in text:
+        freq = freq_mapping[char]
+        #t = np.linspace(0, duration, int(fs * duration), False)
+        #sound = np.sin(freq * t * 2 * np.pi)
+        #sound = generate_waveform("sinewave", freq, duration=duration)
+        sound = generate_waveform("sinewave", freq, duration=duration)
+        sounds.append(sound)
 
-    def send_message(self, message, recipient_public_key):
-        ''' Send the message to the recipient encrypted with the users public key.
-        return success | failure'''
+        # Play the sound
+        sd.play(sound, fs)
+        sd.wait()
 
-        pass
+        # Add a delay between tones
+        #time.sleep(delay)
 
-    def receive_message(self):
-        ''' Receive and decrypt the message with the private local private key.
-        return message '''
+    # Concatenate all sounds into a single numpy array
+    all_sounds = np.concatenate(sounds)
 
-        pass
+    # Generate a random noise signal
+    noise = np.random.normal(0, 1, len(all_sounds))
 
-class messageCrypt:
-    def __init__(self):
-        self.gpg = gnupg.GPG()
+    # Add the noise to the original sound
+    sound_with_noise = all_sounds
+    played_waveform = sound_with_noise
 
-    def encrypt_message(self, message, public_key, rcpt):
-        ''' Encrypt the message using the recipient's public key.
-        return encrypted_message '''
-        # Import the recipient's public key
-        import_result = self.gpg.import_keys(public_key)
-        
-        # Encrypt the message
-        encrypted_data = self.gpg.encrypt(message, rcpt)
-        encrypted_message = str(encrypted_data)
-        
-        return encrypted_message
+    # Write the sounds to a file
+    filename = '/tmp/temp_sound.wav'
+    sf.write(filename, sound_with_noise, fs)
 
-    def decrypt_message(self, message, private_key, passphrase):
-        ''' Decrypt the message using the recipient's private key.
-        return decrypted_message '''
-        # Import the private key
-        import_result = self.gpg.import_keys(private_key)
-        
-        # Decrypt the message
-        decrypted_data = self.gpg.decrypt(message, passphrase=passphrase)
-        decrypted_message = str(decrypted_data)
-        
-        return decrypted_message
+    # Play the sound file
+    #data, fs = sf.read(filename, dtype='float32')
+    #sd.play(data, fs)
+    #sd.wait()
 
-    def text_to_sound(text, min_freq=1, max_freq=5000, fs=44100, duration=0.5):
-        # Convert text to binary
-        binary = ' '.join(format(ord(char), '08b') for char in text)
+    # Delete the sound file
+    os.remove(filename)
 
-        # Create a mapping of unique binary characters to random frequencies
-        unique_chars = list(set(binary))
-        freq_mapping = {char: random.randint(min_freq, max_freq) for char in unique_chars}
+def freq_map(min_freq=100, max_freq=15000):
+    # Create a mapping of all ASCII characters to unique frequencies
+    ascii_chars = [chr(i) for i in range(128)]  # all ASCII characters
+    num_chars = len(ascii_chars)
+    freqs = np.linspace(min_freq, max_freq, num_chars)  # evenly spaced frequencies
+    freqs = [int(freq) for freq in freqs]  # Convert frequencies to integers
+    random.shuffle(freqs)
+    freq_mapping = dict(zip(ascii_chars, freqs))
 
-        # Generate and play a sound for each character in the binary string
-        for char in binary:
-            freq = freq_mapping[char]
-            t = np.linspace(0, duration, int(fs * duration), False)
-            sound = np.sin(freq * t * 2 * np.pi)
-            sd.play(sound, samplerate=fs)
-            sd.wait()
+    # Print a table of the ASCII to frequency mapping
+    print('ASCII to Frequency Mapping:')
+    for char, freq in freq_mapping.items():
+        char = repr(char)
+        print(f'{char}: {freq}')
+
+    return freq_mapping
+
+def play_other_sounds():
+    # Your code to play other sounds goes here
+    pass
+
+class Decoder():
+    def __init__(self, freq_mapping, fs=44100, duration=2):  # Increase duration
+        self.freq_mapping = freq_mapping
+        self.fs = fs
+        self.duration = duration
+        self.buffer = np.array([])
+        self.message = str()
+
+    def callback(self, indata, frames, time, status):
+        # Append new data to buffer
+        self.buffer = np.append(self.buffer, indata)
+
+        recorded_waveform = self.buffer
+
+        # If buffer is long enough, decode and clear buffer
+        if len(self.buffer) >= self.fs * self.duration:
+            self.decode()
+            self.buffer = np.array([])
+
+    def decode(self):
+        # Apply a window function
+        window = windows.hann(len(self.buffer))
+        windowed_data = self.buffer * window
+
+        # Perform a Fourier transform to find the frequencies present in the audio
+        N = int(self.fs * self.duration)  # Convert to integero
+        yf = fft(windowed_data)
+        xf = fftfreq(N, 1 / self.fs)
+
+        # Find the peak frequency
+        peak_freq = int(xf[np.argmax(np.abs(yf))])
+
+        # Match the peak frequency to the original frequency-text mapping within a tolerance
+        decoded_char = None
+        min_diff = float('inf')
+        for char, freq in self.freq_mapping.items():
+            diff = abs(freq - peak_freq)
+            if diff < min_diff and diff < 20:  # Allow some tolerance
+                min_diff = diff
+                decoded_char = char
+                if decoded_char.isprintable():
+                    content = f"{freq} {peak_freq} {decoded_char}\n"
+                    output_buffer.insert_text(content)
+                    print(content)
+
+        return
+        # Print the decoded character
+        if decoded_char is not None:
+            if len(output_buffer.text) >= 25:
+                output_buffer.insert_text('\n')
+
+            if decoded_char.isprintable():
+                output_buffer.insert_text(decoded_char)
+
+    def listen(self):
+        with sd.InputStream(callback=self.callback):
+            #print("Listening...")
+            while True:
+                    pass
+
+def generate_waveform(wave_type, freq, fs=44100, duration=2):
+    ''' Generate a waveform with given type, frequency, sample rate, and duration.
+    wave_type: Type of the waveform ("sinewave", "sawtooth", or "pwm")
+    freq: Frequency of the waveform in Hz
+    fs: Sample rate in Hz
+    duration: Duration of the waveform in seconds
+    '''
+
+    # Generate the time values
+    t = np.linspace(0, duration, int(fs * duration), False)
+
+    # Generate the waveform
+    if wave_type == "sinewave":
+        waveform = np.sin(freq * t * 2 * np.pi)
+    elif wave_type == "sawtooth":
+        waveform = signal.sawtooth(2 * np.pi * freq * t)
+    elif wave_type == "pwm":
+        duty = random.uniform(0.1, 0.9)  # Duty cycle
+        waveform = signal.square(2 * np.pi * freq * t, duty)
+    else:
+        raise ValueError(f"Invalid wave type: {wave_type}")
+
+    # Play the waveform
+    #sd.play(waveform, samplerate=fs)
+    #sd.wait()
+
+    return waveform
+
+def plot_waveforms():
+    # Plot the played waveform
+    plt.figure(figsize=(12, 6))
+    plt.subplot(2, 1, 1)
+    plt.plot(played_waveform)
+    plt.title('Played Waveform')
+
+    # Plot the recorded waveform
+    plt.subplot(2, 1, 2)
+    plt.plot(recorded_waveform)
+    plt.title('Recorded Waveform')
+
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+# freq_mapping = {'a': 440, 'b': 494, ...}  # Replace with your actual mapping
+#freq_mapping = freq_map()
+#text_to_sound("It's the cooler king looking for assistance. ", freq_mapping)
+#decoder = Decoder(freq_mapping)
+#decoder.listen()
+
+#generate_waveform('pwm', freq=100, fs=4100, duration=50)
+
+freq_mapping = freq_map()
 
 
-class Transmission(Chatter):
-    def __init__(self):
-        pass
 
-class Reception(Chatter):
-    def __init__(self):
-        pass
+# Create custom key bindings
+kb = KeyBindings()
 
-class Security:
-    def __init__(self):
-        ''' '''
-        pass
+@kb.add('c-q')
+def _(event):
+    "When c-q is pressed, exit the application."
+    event.app.exit()
 
-    def frequency_hopping(self):
-        ''' A function for doing frequency hopping to obfiscate communications.
-        return'''
-        pass
+@kb.add('escape', 'enter')
+def _(event):
+    "When escape and enter are pressed, accept the input."
+    event.current_buffer.validate_and_handle()
 
-    def error_correction(self):
-        ''' '''
-        pass
+@kb.add('c-s')
+def _(event):
+    dialog = message_dialog(
+                    title='Results',
+                    text=output_buffer.text).run()
 
-    def compression(self):
-        ''''''
-        pass
+def dump_output():
+    if 'chars' not in globals():
+        chars = 0
 
-    def authentication(self):
-        ''' Initial authentication for using the gpg private key. '''
-        pass
+    chars += len(output_buffer.text)
+    if len(output_buffer.text) > 0:
+        print(output_buffer.text)
 
-    def secure_key_exchange(self):
-        ''' Generate a shared key and transmit for communications handshake. '''
-        pass
+    if chars >= 30:
+        print()
+        chars = 0
 
-    def digital_signature(self):
-        ''' Sign each message with the local public key of the sender. '''
-        pass
+    output_buffer.reset()  # Clear the buffer
+    timer = threading.Timer(5, dump_output)
+    timer.start()
 
-class AudioProcessing:
-    def __init__(self):
-        ''' '''
-        pass
+# Create a timer that calls my_function after 5 seconds
+#timer = threading.Timer(5, dump_output)
 
-    def echo_cancellation(self):
-        ''' '''
-        pass
+# Start the timer
 
-    def adaptive_modulation(self):
-        '''' '''
-        pass
+#timer.start()
 
-    def noise_reduction(self):
-        ''' '''
-        pass
+# Create a Decoder instance
+decoder = Decoder(freq_mapping, fs=44100, duration=2)
 
-    def automatic_gain_control(self):
-        ''' '''
-        pass
+# Start listening for signals in a separate thread
+listen_thread = threading.Thread(target=decoder.listen)
+listen_thread.start()
 
-    def encode_binary_to_audio(self):
-        ''' '''
+bottom_toolbar = "some info here\nand here\n"
+session = PromptSession(multiline=True, bottom_toolbar=bottom_toolbar, key_bindings=kb)
+
+while True:
+    text = session.prompt("prompt> ")
+    if text is not (None or ''):
+        text_to_sound(text, freq_mapping, delay=0.25, duration=2)
+        bottom_toolbar = text
+        del text
+
+        dialog = message_dialog(
+                    title='Results',
+                    text=output_buffer.text).run()
+
+    #plot_waveforms()
+
